@@ -1,0 +1,78 @@
+name: Check React application
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        type: string
+        default: "20"
+      pnpm_version:
+        type: string
+        default: "9"
+      install_command:
+        type: string
+        default: "pnpm install --frozen-lockfile --ignore-scripts"
+      enable_lint:
+        type: boolean
+        default: true
+      lint_command:
+        type: string
+        default: "pnpm run lint"
+      enable_typecheck:
+        type: boolean
+        default: true
+      typecheck_command:
+        type: string
+        default: "pnpm run typecheck"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    if: inputs.enable_lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Run lint
+        run: ${{ inputs.lint_command }}
+
+  typecheck:
+    if: inputs.enable_typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Run typecheck
+        run: ${{ inputs.typecheck_command }}

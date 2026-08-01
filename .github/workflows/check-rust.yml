@@ -1,0 +1,145 @@
+name: Check Rust application
+
+on:
+  workflow_call:
+    inputs:
+      submodules:
+        description: "Checkout git submodules."
+        type: boolean
+        default: false
+      install_protoc:
+        description: "Install the Protobuf compiler before building (needed by clippy/test if the crate compiles .proto files)."
+        type: boolean
+        default: false
+      sqlx_offline:
+        description: "Set SQLX_OFFLINE=true so sqlx query! macros use the checked-in query cache instead of a live database."
+        type: boolean
+        default: false
+      env_vars:
+        description: "Newline-separated KEY=VALUE pairs exported before clippy/test run, e.g. for DATABASE_URL."
+        type: string
+        default: ""
+      enable_fmt:
+        type: boolean
+        default: true
+      fmt_command:
+        type: string
+        default: "cargo fmt --all -- --check"
+      enable_clippy:
+        type: boolean
+        default: true
+      clippy_command:
+        type: string
+        default: "cargo clippy --all-targets --all-features -- -D warnings"
+      enable_test:
+        type: boolean
+        default: true
+      pre_test_command:
+        description: "Shell commands run before the test command, e.g. to start docker-compose services and wait for them to be ready."
+        type: string
+        default: ""
+      test_command:
+        type: string
+        default: "cargo test --all-features"
+      post_test_command:
+        description: "Shell commands run after the test command, always (even on failure), e.g. to tear down docker-compose services."
+        type: string
+        default: ""
+    secrets:
+      submodule_ssh_key:
+        description: "SSH deploy key used to check out private git submodules."
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    if: inputs.enable_fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: ${{ inputs.submodules }}
+          ssh-key: ${{ secrets.submodule_ssh_key }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Run cargo fmt
+        run: ${{ inputs.fmt_command }}
+
+  clippy:
+    if: inputs.enable_clippy
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: ${{ inputs.sqlx_offline }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: ${{ inputs.submodules }}
+          ssh-key: ${{ secrets.submodule_ssh_key }}
+
+      - name: Install Protobuf compiler
+        if: inputs.install_protoc
+        run: which protoc || apt-get install -y -o DPkg::Lock::Timeout=120 protobuf-compiler
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set custom environment variables
+        if: inputs.env_vars != ''
+        run: echo "${{ inputs.env_vars }}" >> "$GITHUB_ENV"
+
+      - name: Run cargo clippy
+        run: ${{ inputs.clippy_command }}
+
+  test:
+    if: inputs.enable_test
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: ${{ inputs.sqlx_offline }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: ${{ inputs.submodules }}
+          ssh-key: ${{ secrets.submodule_ssh_key }}
+
+      - name: Install Protobuf compiler
+        if: inputs.install_protoc
+        run: which protoc || apt-get install -y -o DPkg::Lock::Timeout=120 protobuf-compiler
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set custom environment variables
+        if: inputs.env_vars != ''
+        run: echo "${{ inputs.env_vars }}" >> "$GITHUB_ENV"
+
+      - name: Pre-test setup
+        if: inputs.pre_test_command != ''
+        run: ${{ inputs.pre_test_command }}
+
+      - name: Run cargo test
+        run: ${{ inputs.test_command }}
+
+      - name: Post-test teardown
+        if: always() && inputs.post_test_command != ''
+        run: ${{ inputs.post_test_command }}

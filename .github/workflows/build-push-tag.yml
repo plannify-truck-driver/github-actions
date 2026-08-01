@@ -1,0 +1,310 @@
+name: Build and Push on tag
+
+on:
+  workflow_call:
+    inputs:
+      submodules:
+        description: "Checkout git submodules (needed by gitleaks/sast/docker build if the repo has private submodules)."
+        type: boolean
+        default: false
+      semgrep_config:
+        description: "Semgrep ruleset(s). Defaults to 'auto', which detects the languages present in the repo."
+        type: string
+        default: auto
+      images:
+        description: >-
+          JSON array of images to build, e.g. '[{"image":"org/api","target":"api"},{"image":"org/job","target":"job"}]'.
+          Leave "image" empty to default to the calling repository, and "target" empty to build the Dockerfile's
+          default stage. Defaults to a single image built from the repository with no explicit target.
+        type: string
+        default: '[{"image": "", "target": ""}]'
+      docker_build_args:
+        description: "Newline-separated build-args passed to the Docker build."
+        type: string
+        default: ""
+      infra_targets:
+        description: >-
+          JSON array of infrastructure deployment files to bump after the release, e.g.
+          '[{"repo":"org/infrastructure","file":"path/deployment.yaml","image":"ghcr.io/org/api"}]'.
+          Leave empty ('[]', the default) to skip infra updates entirely.
+        type: string
+        default: "[]"
+    secrets:
+      submodule_ssh_key:
+        description: "SSH deploy key used to check out private git submodules."
+        required: false
+      GH_PAT:
+        description: "Personal access token used to push to the infrastructure repo(s). Falls back to the default GITHUB_TOKEN, which only works for same-repo pushes."
+        required: false
+
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: ${{ inputs.submodules }}
+          ssh-key: ${{ secrets.submodule_ssh_key }}
+
+      - name: Run Gitleaks
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/repo" \
+            ghcr.io/gitleaks/gitleaks:latest detect --source=/repo --redact -v
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: ${{ inputs.submodules }}
+          ssh-key: ${{ secrets.submodule_ssh_key }}
+
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: ${{ inputs.semgrep_config }}
+
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Compute release version from tag
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: placeholder
+          tags: |
+            type=semver,pattern={{version}}
+
+  build-and-push:
+    needs: [gitleaks, sast]
+    runs-on: ${{ matrix.runner.name }}
+    strategy:
+      matrix:
+        runner:
+          - name: ubuntu-24.04
+            platform: linux/amd64
+          - name: ubuntu-24.04-arm
+            platform: linux/arm64
+        image: ${{ fromJSON(inputs.images) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
+          submodules: ${{ inputs.submodules }}
+          ssh-key: ${{ secrets.submodule_ssh_key }}
+
+      - name: Resolve image name
+        id: image
+        run: |
+          NAME="${{ matrix.image.image }}"
+          if [ -z "$NAME" ]; then NAME="${{ github.repository }}"; fi
+          SAFE=$(echo "$NAME" | tr '/:' '--')
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "safe=$SAFE" >> "$GITHUB_OUTPUT"
+
+      - name: cache layers
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/.buildx-cache
+          key: buildx-${{ runner.arch }}-${{ steps.image.outputs.safe }}-${{ github.ref_name }}
+          restore-keys: |
+            buildx-${{ runner.arch }}-${{ steps.image.outputs.safe }}-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image (by digest)
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: ${{ matrix.image.target }}
+          platforms: ${{ matrix.runner.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=local,src=${{ runner.temp }}/.buildx-cache
+          cache-to: type=local,dest=${{ runner.temp }}/.buildx-cache-new,mode=max
+          build-args: ${{ inputs.docker_build_args }}
+
+      - name: prepare digest
+        id: digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.image.outputs.safe }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: move cache
+        run: |
+          rm -rf ${{ runner.temp }}/.buildx-cache
+          mv ${{ runner.temp }}/.buildx-cache-new ${{ runner.temp }}/.buildx-cache
+
+  merge-manifests:
+    runs-on: ubuntu-latest
+    needs: [build-and-push, prepare]
+    strategy:
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+    steps:
+      - name: Resolve image name
+        id: image
+        run: |
+          NAME="${{ matrix.image.image }}"
+          if [ -z "$NAME" ]; then NAME="${{ github.repository }}"; fi
+          SAFE=$(echo "$NAME" | tr '/:' '--')
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "safe=$SAFE" >> "$GITHUB_OUTPUT"
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ steps.image.outputs.safe }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ needs.prepare.outputs.version }} \
+            -t ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:latest \
+            $(printf '${{ env.REGISTRY }}/${{ steps.image.outputs.name }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ needs.prepare.outputs.version }}
+
+  analyze-cve:
+    runs-on: ubuntu-latest
+    needs: [merge-manifests, prepare]
+    strategy:
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+    steps:
+      - name: Resolve image name
+        id: image
+        run: |
+          NAME="${{ matrix.image.image }}"
+          if [ -z "$NAME" ]; then NAME="${{ github.repository }}"; fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ needs.prepare.outputs.version }}"
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [analyze-cve, prepare]
+    steps:
+      - name: Build release notes body
+        id: body
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          IMAGES='${{ inputs.images }}'
+          {
+            echo "body<<RELEASE_BODY_EOF"
+            echo "## Docker Image(s)"
+            echo "$IMAGES" | jq -r '.[].image' | while read -r IMG; do
+              [ -z "$IMG" ] && IMG="${{ github.repository }}"
+              echo "\`${{ env.REGISTRY }}/$IMG:$VERSION\`"
+            done
+            echo ""
+            echo "## Installation"
+            echo '```bash'
+            echo "$IMAGES" | jq -r '.[].image' | while read -r IMG; do
+              [ -z "$IMG" ] && IMG="${{ github.repository }}"
+              echo "docker pull ${{ env.REGISTRY }}/$IMG:$VERSION"
+            done
+            echo '```'
+            echo "RELEASE_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: ${{ steps.body.outputs.body }}
+
+  update-infra:
+    if: inputs.infra_targets != '[]'
+    runs-on: ubuntu-latest
+    needs: [prepare, release]
+    steps:
+      - name: Update infrastructure repositories
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TARGETS='${{ inputs.infra_targets }}'
+          TOKEN="${{ secrets.GH_PAT || github.token }}"
+
+          for REPO in $(echo "$TARGETS" | jq -r '[.[].repo] | unique[]'); do
+            echo "::group::Updating $REPO"
+            rm -rf infra-checkout
+            git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${REPO}.git" infra-checkout
+            cd infra-checkout
+
+            echo "$TARGETS" | jq -c --arg repo "$REPO" '.[] | select(.repo == $repo)' | while read -r ENTRY; do
+              FILE=$(echo "$ENTRY" | jq -r '.file')
+              IMAGE=$(echo "$ENTRY" | jq -r '.image')
+              echo "Updating image tag for $IMAGE in $FILE"
+              sed -i "s|\($IMAGE:\).*|\1$VERSION|" "$FILE"
+              git add "$FILE"
+            done
+
+            git config user.name "${{ github.actor }}"
+            git config user.email "${{ github.actor }}@users.noreply.github.com"
+            git commit -m "chore: update image(s) to $VERSION"
+            git push origin HEAD:main
+            cd ..
+            echo "::endgroup::"
+          done
