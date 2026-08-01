@@ -87,7 +87,7 @@ jobs:
 
       - name: Install Protobuf compiler
         if: inputs.install_protoc
-        run: which protoc || apt-get install -y -o DPkg::Lock::Timeout=120 protobuf-compiler
+        run: which protoc || sudo apt-get install -y -o DPkg::Lock::Timeout=120 protobuf-compiler
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -119,7 +119,7 @@ jobs:
 
       - name: Install Protobuf compiler
         if: inputs.install_protoc
-        run: which protoc || apt-get install -y -o DPkg::Lock::Timeout=120 protobuf-compiler
+        run: which protoc || sudo apt-get install -y -o DPkg::Lock::Timeout=120 protobuf-compiler
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@master
