@@ -99,6 +99,10 @@ jobs:
 
   build-and-push:
     needs: [gitleaks, sast]
+    if: |
+      always() &&
+      (needs.gitleaks.result == 'success' || needs.gitleaks.result == 'skipped') &&
+      (needs.sast.result == 'success' || needs.sast.result == 'skipped')
     runs-on: ${{ matrix.runner.name }}
     strategy:
       matrix:
