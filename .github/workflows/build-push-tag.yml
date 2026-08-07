@@ -3,6 +3,14 @@ name: Build and Push on tag
 on:
   workflow_call:
     inputs:
+      use_gitleaks:
+        description: "Use gitleaks job"
+        type: boolean
+        default: true
+      use_sast:
+        description: "Use sast job"
+        type: boolean
+        default: true
       submodules:
         description: "Checkout git submodules (needed by gitleaks/sast/docker build if the repo has private submodules)."
         type: boolean
@@ -47,6 +55,7 @@ permissions:
 jobs:
   gitleaks:
     runs-on: ubuntu-latest
+    if: ${{inputs.use_gitleaks}}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -62,6 +71,7 @@ jobs:
 
   sast:
     runs-on: ubuntu-latest
+    if: ${{inputs.use_sast}}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
