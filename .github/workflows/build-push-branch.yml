@@ -218,7 +218,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: "${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ github.sha }}"
           format: "table"
@@ -226,6 +226,28 @@ jobs:
           ignore-unfixed: true
           vuln-type: "os,library"
           severity: "CRITICAL,HIGH"
+
+      - name: Generate SBOM report
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ github.sha }}"
+          format: "spdx-json"
+          output: "sbom-${{ steps.image.outputs.name }}-${{ github.sha }}.json"
+          exit-code: "0"
+          vuln-type: "os,library"
+
+      - name: Upload SBOM report
+        uses: DependencyTrack/gh-upload-sbom@v4
+        with:
+          server-hostname: ${{ secrets.DEPENDENCYTRACK_HOSTNAME }}
+          api-key: ${{ secrets.DEPENDENCYTRACK_APIKEY }}
+          project-name: ${{ steps.image.outputs.name }}
+          project-version: "master"
+          project-tags: ${{ github.sha }}
+          bom-filename: "sbom-${{ steps.image.outputs.name }}-${{ github.sha }}.json"
+          auto-create: true
+          parent-name: "plannify"
+          parent-version: "master"
 
   update-infra:
     if: inputs.infra_targets != '[]'
