@@ -208,7 +208,10 @@ jobs:
         run: |
           NAME="${{ matrix.image.image }}"
           if [ -z "$NAME" ]; then NAME="${{ github.repository }}"; fi
+          SAFE=$(echo "$NAME" | tr '/:' '--')
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "safe=$SAFE" >> "$GITHUB_OUTPUT"
+          echo "short=${NAME##*/}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -232,7 +235,7 @@ jobs:
         with:
           image-ref: "${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ github.sha }}"
           format: "spdx-json"
-          output: "sbom-${{ steps.image.outputs.name }}-${{ github.sha }}.json"
+          output: "sbom-${{ steps.image.outputs.safe }}-${{ github.sha }}.json"
           exit-code: "0"
           vuln-type: "os,library"
 
@@ -241,10 +244,10 @@ jobs:
         with:
           server-hostname: ${{ secrets.DEPENDENCYTRACK_HOSTNAME }}
           api-key: ${{ secrets.DEPENDENCYTRACK_APIKEY }}
-          project-name: ${{ steps.image.outputs.name }}
+          project-name: ${{ steps.image.outputs.short }}
           project-version: "master"
           project-tags: ${{ github.sha }}
-          bom-filename: "sbom-${{ steps.image.outputs.name }}-${{ github.sha }}.json"
+          bom-filename: "sbom-${{ steps.image.outputs.safe }}-${{ github.sha }}.json"
           auto-create: true
           parent-name: "plannify"
           parent-version: "master"
