@@ -276,6 +276,17 @@ jobs:
           exit-code: "0"
           vuln-type: "os,library"
 
+      - name: Check environment variables for Dependency-Track
+        run: |
+          if [ -z "${{ secrets.DEPENDENCYTRACK_HOSTNAME }}" ]; then
+            echo "Dependency-Track hostname is not set."
+            exit 1
+          fi
+          if [ -z "${{ secrets.DEPENDENCYTRACK_APIKEY }}" ]; then
+            echo "Dependency-Track API key is not set."
+            exit 1
+          fi
+
       - name: Upload SBOM report
         uses: DependencyTrack/gh-upload-sbom@v4
         with:
