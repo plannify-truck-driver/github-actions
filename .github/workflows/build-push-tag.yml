@@ -293,7 +293,7 @@ jobs:
           server-hostname: ${{ secrets.DEPENDENCYTRACK_HOSTNAME }}
           api-key: ${{ secrets.DEPENDENCYTRACK_APIKEY }}
           project-name: ${{ steps.image.outputs.short }}
-          project-version: "master"
+          project-version: "prod"
           project-tags: ${{ needs.prepare.outputs.version }}
           bom-filename: "sbom-${{ steps.image.outputs.safe }}-${{ needs.prepare.outputs.version }}.json"
           auto-create: true
